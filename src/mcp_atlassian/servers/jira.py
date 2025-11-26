@@ -5,7 +5,7 @@ import logging
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 from requests.exceptions import HTTPError
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
@@ -651,16 +651,30 @@ async def create_issue(
     ] = None,
     additional_fields: Annotated[
         dict[str, Any] | None,
+        BeforeValidator(
+            lambda v: (
+                json.loads(v) if isinstance(v, str) else v
+            ) if v is not None else None
+        ),
         Field(
             description=(
-                "(Optional) Dictionary of additional fields to set. Examples:\n"
-                "- Set priority: {'priority': {'name': 'High'}}\n"
-                "- Add labels: {'labels': ['frontend', 'urgent']}\n"
-                "- Link to parent (for any issue type): {'parent': 'PROJ-123'}\n"
+                "(Optional) Dictionary of additional fields to set. Can be provided as:\n"
+                "- A JSON object (dict) - preferred format\n"
+                "- A JSON string that will be automatically parsed\n"
+                "Examples:\n"
+                "- Set priority: {'priority': {'name': 'High'}} or '{\"priority\": {\"name\": \"High\"}}'\n"
+                "- Add labels: {'labels': ['frontend', 'urgent']} or '{\"labels\": [\"frontend\", \"urgent\"]}'\n"
+                "- Link to parent (for any issue type): {'parent': 'PROJ-123'} or '{\"parent\": \"PROJ-123\"}'\n"
                 "- Set Fix Version/s: {'fixVersions': [{'id': '10020'}]}\n"
-                "- Custom fields: {'customfield_10010': 'value'}"
+                "- Custom fields: {'customfield_10010': 'value'}\n"
+                "\n"
+                "Note: If passed as a JSON string, it will be automatically parsed to a dict."
             ),
             default=None,
+            json_schema_extra={
+                "type": "object",
+                "additionalProperties": True,
+            },
         ),
     ] = None,
 ) -> str:
@@ -690,10 +704,50 @@ async def create_issue(
             comp.strip() for comp in components.split(",") if comp.strip()
         ]
 
-    # Use additional_fields directly as dict
-    extra_fields = additional_fields or {}
-    if not isinstance(extra_fields, dict):
-        raise ValueError("additional_fields must be a dictionary.")
+    # additional_fields should already be a dict after BeforeValidator processing
+    # But keep this as a safety check in case BeforeValidator didn't run or failed
+    extra_fields = {}
+    if additional_fields:
+        if isinstance(additional_fields, str):
+            # BeforeValidator should have handled this, but handle it anyway as fallback
+            try:
+                extra_fields = json.loads(additional_fields)
+                if not isinstance(extra_fields, dict):
+                    error_msg = (
+                        f"additional_fields JSON string must represent a dictionary, "
+                        f"but got {type(extra_fields).__name__}. "
+                        f"Received value: {additional_fields[:100]}{'...' if len(additional_fields) > 100 else ''}"
+                    )
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                logger.debug(
+                    f"Parsed additional_fields from string to dict: {extra_fields}"
+                )
+            except json.JSONDecodeError as e:
+                error_msg = (
+                    f"Failed to parse additional_fields as JSON: {str(e)}. "
+                    f"Please ensure the JSON string is valid. "
+                    f"Received value: {additional_fields[:200]}{'...' if len(additional_fields) > 200 else ''}"
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg) from e
+            except Exception as e:
+                error_msg = (
+                    f"Unexpected error while parsing additional_fields: {type(e).__name__}: {str(e)}. "
+                    f"Received value: {additional_fields[:200]}{'...' if len(additional_fields) > 200 else ''}"
+                )
+                logger.error(error_msg, exc_info=True)
+                raise ValueError(error_msg) from e
+        elif isinstance(additional_fields, dict):
+            extra_fields = additional_fields
+        else:
+            error_msg = (
+                f"additional_fields must be a dictionary (dict) or a JSON string, "
+                f"but got {type(additional_fields).__name__}. "
+                f"Please provide a dict object or a valid JSON string."
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
     issue = jira.create_issue(
         project_key=project_key,
