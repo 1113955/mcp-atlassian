@@ -44,6 +44,11 @@ def setup_logging(
         logger = logging.getLogger(logger_name)
         logger.setLevel(level)
 
+    # Silence noisy libraries
+    noisy_loggers = ["fakeredis", "docket", "asyncio"]
+    for logger_name in noisy_loggers:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
     # Return the application logger
     return logging.getLogger("mcp-atlassian")
 
